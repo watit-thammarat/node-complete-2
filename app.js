@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -6,9 +7,12 @@ const morgan = require('morgan');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const multer = require('multer');
+const grapqlHttp = require('express-graphql');
 
-const feedRoutes = require('./routes/feed');
-const authRoutes = require('./routes/auth');
+const graphqlSchema = require('./graphql/schema');
+const graphqlResolver = require('./graphql/resolver');
+const auth = require('./middleware/auth');
+const { clearImage } = require('./util/file');
 
 const MONGODB_URI = 'mongodb://localhost:27017/messages';
 const app = express();
@@ -48,11 +52,44 @@ app.use((req, res, next) => {
     'GET, POST, PUT, PATCH, DELETE'
   );
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
 });
 
-app.use('/feed', feedRoutes);
-app.use('/auth', authRoutes);
+app.use(auth);
+
+app.put('/post-image', (req, res, next) => {
+  if (!req.isAuth) {
+    return res.status(401).json({ message: 'Not authenticated' });
+  }
+  if (!req.file) {
+    return res.status(200).json({ message: 'No file provided' });
+  }
+  if (req.body.oldPath) {
+    clearImage(req.body.oldPath);
+  }
+  res.status(201).json({ message: 'File stored', filePath: req.file.path });
+});
+
+app.use(
+  '/graphql',
+  grapqlHttp({
+    schema: graphqlSchema,
+    rootValue: graphqlResolver,
+    graphiql: true,
+    formatError(err) {
+      if (!err.originalError) {
+        return err;
+      }
+      const data = err.originalError.data || null;
+      const message = err.message || 'An error occurred';
+      const code = err.originalError.code || 500;
+      return { message, data, code };
+    }
+  })
+);
 
 app.use((err, req, res, next) => {
   console.error(err);
@@ -64,7 +101,6 @@ app.use((err, req, res, next) => {
 mongoose
   .connect(MONGODB_URI)
   .then(() => {
-    const server = app.listen(8080);
-    require('./socket').init(server);
+    app.listen(8080, () => console.log('Server started at port 8080'));
   })
   .catch(err => console.error(err));
